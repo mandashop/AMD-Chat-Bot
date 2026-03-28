@@ -1,0 +1,17 @@
+{
+  "name": "amdchat-bot",
+  "version": "1.0.0",
+  "description": "AMD Chat Bot for Telegram on Cloudflare Workers",
+  "main": "src/worker.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "logs": "wrangler tail"
+  },
+  "keywords": ["telegram", "bot", "cloudflare", "workers"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
