@@ -1,6 +1,7 @@
 name = "amdchat-bot"
 main = "src/worker.js"
 compatibility_date = "2024-01-01"
+account_id = "23a6876b51b2feecf75dda06380e3929"
 
 # KV Namespace for data storage
 [[kv_namespaces]]
