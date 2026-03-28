@@ -51,28 +51,28 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = db.get_all_groups()
     valid_groups = []
 
-    print(f"Found {len(groups)} groups in database")
+    print(f"[ADMIN] Found {len(groups)} groups in database")
 
     # 봇이 관리자인 그룹 & 유저가 정보 변경 권한이 있는 그룹 찾기
     for group in groups:
         chat_id = group['chat_id']
-        print(f"Checking group {chat_id}: {group.get('title', 'Unknown')}")
+        print(f"[ADMIN] Checking group {chat_id}: {group.get('title', 'Unknown')}")
         
         is_bot_admin = await check_bot_admin(context.bot, chat_id)
-        print(f"  - Bot admin: {is_bot_admin}")
+        print(f"[ADMIN]   - Bot admin: {is_bot_admin}")
         
         if is_bot_admin:
             is_user_admin = await check_admin_rights(context.bot, chat_id, user_id)
-            print(f"  - User admin with rights: {is_user_admin}")
+            print(f"[ADMIN]   - User admin with rights: {is_user_admin}")
             
             if is_user_admin:
                 try:
                     chat = await context.bot.get_chat(chat_id)
                     title = chat.title if chat.title else f"그룹 ({chat_id})"
                     valid_groups.append((chat_id, title))
-                    print(f"  - Added to valid groups: {title}")
+                    print(f"[ADMIN]   - Added to valid groups: {title}")
                 except Exception as e:
-                    print(f"  - Error getting chat info: {e}")
+                    print(f"[ADMIN]   - Error getting chat info: {e}")
                     # Use stored title if available
                     title = group.get('title', f"그룹 ({chat_id})")
                     valid_groups.append((chat_id, title))
@@ -127,8 +127,10 @@ async def handle_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     except:
         context.user_data['admin_chat_title'] = f"그룹 ({chat_id})"
     
+    print(f"[ADMIN] Group selected: {context.user_data['admin_chat_title']} ({chat_id})")
+    
     # Show main menu
-    await send_main_menu(query, edit=True)
+    await send_main_menu(query, edit=True, context=context)
     return MAIN_MENU
 
 async def send_main_menu(message_or_query, edit=False, context=None):
@@ -178,6 +180,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
     data = query.data
+    print(f"[ADMIN] Callback received: {data}")
 
     if data == "admin_main":
         await send_main_menu(query, edit=True, context=context)
@@ -310,7 +313,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     elif data == "stats_backup":
+        # 먼저 백업 파일 전송
         await send_backup(query.message, chat_id)
+        # 그 다음 메시지 업데이트
         await query.edit_message_text(
             "✅ 백업 파일이 전송되었습니다.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]])
