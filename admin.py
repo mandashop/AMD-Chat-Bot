@@ -8,6 +8,7 @@ import database as db
 # States for ConversationHandler
 (
     SELECT_GROUP,
+    MAIN_MENU,
     AWAITING_BANNED_WORD,
     AWAITING_BANNED_WORD_REMOVE,
     AWAITING_SPAM_LIMIT,
@@ -16,7 +17,7 @@ import database as db
     AWAITING_SCHEDULE_TIME,
     AWAITING_SCHEDULE_REPEAT,
     AWAITING_SCHEDULE_REMOVE
-) = range(9)
+) = range(10)
 
 async def check_admin_rights(bot, chat_id, user_id):
     try:
@@ -26,14 +27,16 @@ async def check_admin_rights(bot, chat_id, user_id):
         elif user_member.status == 'administrator':
             return getattr(user_member, 'can_change_info', False)
         return False
-    except Exception:
+    except Exception as e:
+        print(f"Error checking admin rights: {e}")
         return False
 
 async def check_bot_admin(bot, chat_id):
     try:
         bot_member = await bot.get_chat_member(chat_id, bot.id)
         return bot_member.status in ['administrator', 'creator']
-    except Exception:
+    except Exception as e:
+        print(f"Error checking bot admin: {e}")
         return False
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -48,20 +51,40 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = db.get_all_groups()
     valid_groups = []
 
+    print(f"Found {len(groups)} groups in database")
+
     # 봇이 관리자인 그룹 & 유저가 정보 변경 권한이 있는 그룹 찾기
     for group in groups:
         chat_id = group['chat_id']
-        if await check_bot_admin(context.bot, chat_id):
-            if await check_admin_rights(context.bot, chat_id, user_id):
+        print(f"Checking group {chat_id}: {group.get('title', 'Unknown')}")
+        
+        is_bot_admin = await check_bot_admin(context.bot, chat_id)
+        print(f"  - Bot admin: {is_bot_admin}")
+        
+        if is_bot_admin:
+            is_user_admin = await check_admin_rights(context.bot, chat_id, user_id)
+            print(f"  - User admin with rights: {is_user_admin}")
+            
+            if is_user_admin:
                 try:
                     chat = await context.bot.get_chat(chat_id)
                     title = chat.title if chat.title else f"그룹 ({chat_id})"
                     valid_groups.append((chat_id, title))
-                except Exception:
-                    pass
+                    print(f"  - Added to valid groups: {title}")
+                except Exception as e:
+                    print(f"  - Error getting chat info: {e}")
+                    # Use stored title if available
+                    title = group.get('title', f"그룹 ({chat_id})")
+                    valid_groups.append((chat_id, title))
 
     if not valid_groups:
-        await update.message.reply_text("현재 관리자로 설정할 수 있는 그룹이 없습니다.\n조건: 봇이 그룹의 관리자여야 하며, 회원님도 해당 그룹에서 '정보 변경' 권한이 있는 관리자여야 합니다.")
+        await update.message.reply_text(
+            "현재 관리자로 설정할 수 있는 그룹이 없습니다.\n\n"
+            "조건:\n"
+            "1. 봇이 그룹의 관리자여야 함\n"
+            "2. 회원님도 해당 그룹에서 '정보 변경' 권한이 있는 관리자여야 함\n\n"
+            "봇을 그룹에 추가하고 관리자로 지정한 후 다시 시도해주세요."
+        )
         return ConversationHandler.END
 
     keyboard = []
@@ -69,7 +92,12 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(title, callback_data=f"select_group_{chat_id}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("⚙️ **설정할 그룹을 선택해주세요.**", reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text(
+        "⚙️ **설정할 그룹을 선택해주세요.**\n\n"
+        "아래 목록에서 관리할 그룹을 선택하세요.",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
     return SELECT_GROUP
 
 async def handle_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -81,26 +109,44 @@ async def handle_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         chat_id = int(chat_id_str)
     except ValueError:
+        await query.edit_message_text("❌ 오류가 발생했습니다. 다시 시도해주세요.")
+        return ConversationHandler.END
+
+    # Verify user still has admin rights
+    user_id = query.from_user.id
+    if not await check_admin_rights(context.bot, chat_id, user_id):
+        await query.edit_message_text("❌ 해당 그룹에 대한 관리자 권한이 없습니다.")
         return ConversationHandler.END
 
     # Save to user_data
     context.user_data['admin_chat_id'] = chat_id
     
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        context.user_data['admin_chat_title'] = chat.title if chat.title else f"그룹 ({chat_id})"
+    except:
+        context.user_data['admin_chat_title'] = f"그룹 ({chat_id})"
+    
     # Show main menu
     await send_main_menu(query, edit=True)
-    return ConversationHandler.END
+    return MAIN_MENU
 
-async def send_main_menu(message_or_query, edit=False):
+async def send_main_menu(message_or_query, edit=False, context=None):
     keyboard = [
-        [InlineKeyboardButton("도배 방지 설정", callback_data="admin_spam")],
-        [InlineKeyboardButton("닉네임 변경 알림 설정", callback_data="admin_nick")],
-        [InlineKeyboardButton("금칙어 관리", callback_data="admin_banned")],
-        [InlineKeyboardButton("예약 메시지 관리", callback_data="admin_schedule")],
-        [InlineKeyboardButton("통계 데이터 관리", callback_data="admin_stats")],
-        [InlineKeyboardButton("그룹 다시 선택", callback_data="admin_reselect")]
+        [InlineKeyboardButton("🚫 도배 방지 설정", callback_data="admin_spam")],
+        [InlineKeyboardButton("🔔 닉네임 변경 알림 설정", callback_data="admin_nick")],
+        [InlineKeyboardButton("🤬 금칙어 관리", callback_data="admin_banned")],
+        [InlineKeyboardButton("📅 예약 메시지 관리", callback_data="admin_schedule")],
+        [InlineKeyboardButton("📊 통계 데이터 관리", callback_data="admin_stats")],
+        [InlineKeyboardButton("🔄 그룹 다시 선택", callback_data="admin_reselect")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = "🔧 **관리자 메뉴**\n원하는 설정을 선택하세요."
+    
+    if context and 'admin_chat_title' in context.user_data:
+        title = context.user_data['admin_chat_title']
+        text = f"🔧 **관리자 메뉴**\n\n그룹: {title}\n\n원하는 설정을 선택하세요."
+    else:
+        text = "🔧 **관리자 메뉴**\n\n원하는 설정을 선택하세요."
     
     if edit:
         await message_or_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -114,6 +160,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         if 'admin_chat_id' in context.user_data:
             del context.user_data['admin_chat_id']
+        if 'admin_chat_title' in context.user_data:
+            del context.user_data['admin_chat_title']
         await query.edit_message_text("다시 설정하려면 `/admin` 명령어를 입력해주세요.", parse_mode='Markdown')
         return ConversationHandler.END
 
@@ -132,8 +180,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "admin_main":
-        await send_main_menu(query, edit=True)
-        return ConversationHandler.END
+        await send_main_menu(query, edit=True, context=context)
+        return MAIN_MENU
         
     elif data == "admin_spam":
         limit = db.get_setting(chat_id, "spam_limit", 5)
@@ -143,30 +191,33 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("시간 제한 변경", callback_data="spam_time")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🚫 **도배 방지 설정**\n현재 설정: {time_sec}초 내에 {limit}회 동일 메시지 전송 시 제재"
+        text = f"🚫 **도배 방지 설정**\n\n현재 설정: {time_sec}초 내에 {limit}회 동일 메시지 전송 시 제재"
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return MAIN_MENU
         
     elif data == "admin_nick":
         is_on = db.get_setting(chat_id, "nick_alert", False)
-        status = "켜짐" if is_on else "꺼짐"
+        status = "켜짐 ✅" if is_on else "꺼짐 ❌"
         keyboard = [
             [InlineKeyboardButton("상태 토글", callback_data="nick_toggle")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🔔 **닉네임 변경 알림**\n현재 상태: {status}"
+        text = f"🔔 **닉네임 변경 알림**\n\n현재 상태: {status}"
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return MAIN_MENU
 
     elif data == "nick_toggle":
         is_on = db.get_setting(chat_id, "nick_alert", False)
         db.set_setting(chat_id, "nick_alert", not is_on)
         is_on = not is_on
-        status = "켜짐" if is_on else "꺼짐"
+        status = "켜짐 ✅" if is_on else "꺼짐 ❌"
         keyboard = [
             [InlineKeyboardButton("상태 토글", callback_data="nick_toggle")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🔔 **닉네임 변경 알림**\n현재 상태: {status}"
+        text = f"🔔 **닉네임 변경 알림**\n\n현재 상태: {status}"
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return MAIN_MENU
 
     elif data == "admin_banned":
         words = db.get_banned_words(chat_id)
@@ -176,8 +227,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("금칙어 삭제", callback_data="banned_remove")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🤬 **금칙어 관리**\n현재 등록된 금칙어:\n{word_list}"
+        text = f"🤬 **금칙어 관리**\n\n현재 등록된 금칙어:\n{word_list}"
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return MAIN_MENU
 
     elif data == "admin_schedule":
         msgs = db.get_scheduled_messages(chat_id)
@@ -194,6 +246,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return MAIN_MENU
 
     elif data == "admin_stats":
         keyboard = [
@@ -203,41 +256,68 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         text = "📊 **통계 데이터 관리**"
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return MAIN_MENU
 
     elif data == "spam_limit":
-        await query.edit_message_text("새로운 도배 제한 횟수를 숫자로 입력하세요.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_spam")]]))
+        await query.edit_message_text(
+            "새로운 도배 제한 횟수를 숫자로 입력하세요.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_spam")]])
+        )
         return AWAITING_SPAM_LIMIT
 
     elif data == "spam_time":
-        await query.edit_message_text("새로운 도배 제한 시간(초)을 숫자로 입력하세요.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_spam")]]))
+        await query.edit_message_text(
+            "새로운 도배 제한 시간(초)을 숫자로 입력하세요.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_spam")]])
+        )
         return AWAITING_SPAM_TIME
 
     elif data == "banned_add":
-        await query.edit_message_text("추가할 금칙어를 입력하세요.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_banned")]]))
+        await query.edit_message_text(
+            "추가할 금칙어를 입력하세요.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_banned")]])
+        )
         return AWAITING_BANNED_WORD
 
     elif data == "banned_remove":
-        await query.edit_message_text("삭제할 금칙어를 입력하세요.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_banned")]]))
+        await query.edit_message_text(
+            "삭제할 금칙어를 입력하세요.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_banned")]])
+        )
         return AWAITING_BANNED_WORD_REMOVE
 
     elif data == "schedule_add":
-        await query.edit_message_text("발송할 예약 메시지 내용을 입력하세요.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_schedule")]]))
+        await query.edit_message_text(
+            "발송할 예약 메시지 내용을 입력하세요.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_schedule")]])
+        )
         return AWAITING_SCHEDULE_MSG
 
     elif data == "schedule_remove":
-        await query.edit_message_text("삭제할 예약 메시지 ID를 숫자로 입력하세요.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_schedule")]]))
+        await query.edit_message_text(
+            "삭제할 예약 메시지 ID를 숫자로 입력하세요.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_schedule")]])
+        )
         return AWAITING_SCHEDULE_REMOVE
 
     elif data == "stats_reset":
         db.reset_all_user_stats(chat_id)
         db.reset_all_attendance(chat_id)
-        await query.edit_message_text("✅ 통계 데이터가 초기화되었습니다.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]]))
+        await query.edit_message_text(
+            "✅ 통계 데이터가 초기화되었습니다.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]])
+        )
+        return MAIN_MENU
 
     elif data == "stats_backup":
         await send_backup(query.message, chat_id)
-        await query.edit_message_text("✅ 백업 파일이 전송되었습니다.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]]))
+        await query.edit_message_text(
+            "✅ 백업 파일이 전송되었습니다.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]])
+        )
+        return MAIN_MENU
 
-    return ConversationHandler.END
+    return MAIN_MENU
 
 async def send_backup(message, chat_id):
     users = db.get_top_chatters(chat_id, 1000)
@@ -261,7 +341,9 @@ async def send_backup(message, chat_id):
 
 async def handle_input_spam_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.user_data.get('admin_chat_id')
-    if not chat_id: return ConversationHandler.END
+    if not chat_id:
+        await update.message.reply_text("❌ 세션이 만료되었습니다. /admin을 다시 입력해주세요.")
+        return ConversationHandler.END
     
     try:
         limit = int(update.message.text)
@@ -269,12 +351,15 @@ async def handle_input_spam_limit(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"✅ 도배 제한 횟수가 {limit}회로 변경되었습니다.")
     except ValueError:
         await update.message.reply_text("❌ 숫자를 입력해주세요.")
-    await send_main_menu(update.message)
-    return ConversationHandler.END
+    
+    await send_main_menu(update.message, context=context)
+    return MAIN_MENU
 
 async def handle_input_spam_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.user_data.get('admin_chat_id')
-    if not chat_id: return ConversationHandler.END
+    if not chat_id:
+        await update.message.reply_text("❌ 세션이 만료되었습니다. /admin을 다시 입력해주세요.")
+        return ConversationHandler.END
 
     try:
         time_sec = int(update.message.text)
@@ -282,32 +367,39 @@ async def handle_input_spam_time(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"✅ 도배 제한 시간이 {time_sec}초로 변경되었습니다.")
     except ValueError:
         await update.message.reply_text("❌ 숫자를 입력해주세요.")
-    await send_main_menu(update.message)
-    return ConversationHandler.END
+    
+    await send_main_menu(update.message, context=context)
+    return MAIN_MENU
 
 async def handle_input_banned_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.user_data.get('admin_chat_id')
-    if not chat_id: return ConversationHandler.END
+    if not chat_id:
+        await update.message.reply_text("❌ 세션이 만료되었습니다. /admin을 다시 입력해주세요.")
+        return ConversationHandler.END
 
     word = update.message.text.strip()
     if db.add_banned_word(chat_id, word):
         await update.message.reply_text(f"✅ 금칙어 '{word}' 추가 완료.")
     else:
         await update.message.reply_text("⚠️ 이미 등록된 금칙어입니다.")
-    await send_main_menu(update.message)
-    return ConversationHandler.END
+    
+    await send_main_menu(update.message, context=context)
+    return MAIN_MENU
 
 async def handle_input_banned_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.user_data.get('admin_chat_id')
-    if not chat_id: return ConversationHandler.END
+    if not chat_id:
+        await update.message.reply_text("❌ 세션이 만료되었습니다. /admin을 다시 입력해주세요.")
+        return ConversationHandler.END
 
     word = update.message.text.strip()
     if db.remove_banned_word(chat_id, word):
         await update.message.reply_text(f"✅ 금칙어 '{word}' 삭제 완료.")
     else:
         await update.message.reply_text("⚠️ 등록되지 않은 금칙어입니다.")
-    await send_main_menu(update.message)
-    return ConversationHandler.END
+    
+    await send_main_menu(update.message, context=context)
+    return MAIN_MENU
 
 async def handle_schedule_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['schedule_msg'] = update.message.text
@@ -332,7 +424,9 @@ async def handle_schedule_time(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_schedule_repeat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = context.user_data.get('admin_chat_id')
-    if not chat_id: return ConversationHandler.END
+    if not chat_id:
+        await query.answer("세션이 만료되었습니다.", show_alert=True)
+        return ConversationHandler.END
 
     await query.answer()
     
@@ -342,12 +436,14 @@ async def handle_schedule_repeat(update: Update, context: ContextTypes.DEFAULT_T
     
     db.add_scheduled_message(chat_id, msg, time_str, repeat_type)
     await query.edit_message_text("✅ 예약 메시지가 등록되었습니다.")
-    await send_main_menu(query.message)
-    return ConversationHandler.END
+    await send_main_menu(query.message, context=context)
+    return MAIN_MENU
 
 async def handle_schedule_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.user_data.get('admin_chat_id')
-    if not chat_id: return ConversationHandler.END
+    if not chat_id:
+        await update.message.reply_text("❌ 세션이 만료되었습니다. /admin을 다시 입력해주세요.")
+        return ConversationHandler.END
 
     try:
         msg_id = int(update.message.text.strip())
@@ -357,8 +453,9 @@ async def handle_schedule_remove(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text("⚠️ 해당 ID의 예약 메시지가 없습니다.")
     except ValueError:
         await update.message.reply_text("❌ 숫자를 입력해주세요.")
-    await send_main_menu(update.message)
-    return ConversationHandler.END
+    
+    await send_main_menu(update.message, context=context)
+    return MAIN_MENU
 
 async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type == 'private':
@@ -377,20 +474,43 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def get_admin_conversation_handler():
     return ConversationHandler(
         entry_points=[
-            CommandHandler('admin', cmd_admin),
-            CallbackQueryHandler(admin_callback, pattern='^admin_|^spam_|^nick_|^banned_|^schedule_|^stats_')
+            CommandHandler('admin', cmd_admin)
         ],
         states={
-            SELECT_GROUP: [CallbackQueryHandler(handle_group_select, pattern='^select_group_')],
-            AWAITING_SPAM_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_limit)],
-            AWAITING_SPAM_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_time)],
-            AWAITING_BANNED_WORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_banned_word)],
-            AWAITING_BANNED_WORD_REMOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_banned_remove)],
-            AWAITING_SCHEDULE_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_msg)],
-            AWAITING_SCHEDULE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_time)],
-            AWAITING_SCHEDULE_REPEAT: [CallbackQueryHandler(handle_schedule_repeat, pattern='^rep_')],
-            AWAITING_SCHEDULE_REMOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_remove)]
+            SELECT_GROUP: [
+                CallbackQueryHandler(handle_group_select, pattern='^select_group_')
+            ],
+            MAIN_MENU: [
+                CallbackQueryHandler(admin_callback, pattern='^admin_|^spam_|^nick_|^banned_|^schedule_|^stats_')
+            ],
+            AWAITING_SPAM_LIMIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_limit)
+            ],
+            AWAITING_SPAM_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_time)
+            ],
+            AWAITING_BANNED_WORD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_banned_word)
+            ],
+            AWAITING_BANNED_WORD_REMOVE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_banned_remove)
+            ],
+            AWAITING_SCHEDULE_MSG: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_msg)
+            ],
+            AWAITING_SCHEDULE_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_time)
+            ],
+            AWAITING_SCHEDULE_REPEAT: [
+                CallbackQueryHandler(handle_schedule_repeat, pattern='^rep_')
+            ],
+            AWAITING_SCHEDULE_REMOVE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_remove)
+            ]
         },
-        fallbacks=[CommandHandler('admin', cmd_admin)],
+        fallbacks=[
+            CommandHandler('admin', cmd_admin),
+            CommandHandler('cancel', lambda u, c: u.message.reply_text("취소되었습니다. /admin을 다시 입력해주세요.") or ConversationHandler.END)
+        ],
         allow_reentry=True
     )
