@@ -7,6 +7,7 @@ import database as db
 
 # States for ConversationHandler
 (
+    SELECT_GROUP,
     AWAITING_BANNED_WORD,
     AWAITING_BANNED_WORD_REMOVE,
     AWAITING_SPAM_LIMIT,
@@ -15,7 +16,7 @@ import database as db
     AWAITING_SCHEDULE_TIME,
     AWAITING_SCHEDULE_REPEAT,
     AWAITING_SCHEDULE_REMOVE
-) = range(8)
+) = range(9)
 
 async def check_admin_rights(bot, chat_id, user_id):
     try:
@@ -37,24 +38,56 @@ async def check_bot_admin(bot, chat_id):
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
-        return
+        return ConversationHandler.END
         
-    if update.message.chat.type not in ['group', 'supergroup']:
-        await update.message.reply_text("관리자 명령어는 그룹 채팅에서만 사용 가능합니다.")
-        return
+    if update.message.chat.type != 'private':
+        await update.message.reply_text("관리자 명령어는 봇과의 1:1 개인 채팅에서만 사용 가능합니다.")
+        return ConversationHandler.END
 
-    chat_id = update.message.chat.id
     user_id = update.message.from_user.id
+    groups = db.get_all_groups()
+    valid_groups = []
 
-    if not await check_bot_admin(context.bot, chat_id):
-        await update.message.reply_text("봇이 이 그룹의 관리자가 아닙니다. 관리자로 지정해주세요.")
+    # 봇이 관리자인 그룹 & 유저가 정보 변경 권한이 있는 그룹 찾기
+    for group in groups:
+        chat_id = group['chat_id']
+        if await check_bot_admin(context.bot, chat_id):
+            if await check_admin_rights(context.bot, chat_id, user_id):
+                try:
+                    chat = await context.bot.get_chat(chat_id)
+                    title = chat.title if chat.title else f"그룹 ({chat_id})"
+                    valid_groups.append((chat_id, title))
+                except Exception:
+                    pass
+
+    if not valid_groups:
+        await update.message.reply_text("현재 관리자로 설정할 수 있는 그룹이 없습니다.\n조건: 봇이 그룹의 관리자여야 하며, 회원님도 해당 그룹에서 '정보 변경' 권한이 있는 관리자여야 합니다.")
         return ConversationHandler.END
 
-    if not await check_admin_rights(context.bot, chat_id, user_id):
-        await update.message.reply_text("이 명령어를 사용하려면 그룹 정보 변경 권한(can_change_info)이 있는 관리자여야 합니다.")
+    keyboard = []
+    for chat_id, title in valid_groups:
+        keyboard.append([InlineKeyboardButton(title, callback_data=f"select_group_{chat_id}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("⚙️ **설정할 그룹을 선택해주세요.**", reply_markup=reply_markup, parse_mode='Markdown')
+    return SELECT_GROUP
+
+async def handle_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # Extract chat_id from callback_data
+    chat_id_str = query.data.replace("select_group_", "")
+    try:
+        chat_id = int(chat_id_str)
+    except ValueError:
         return ConversationHandler.END
 
-    await send_main_menu(update.message)
+    # Save to user_data
+    context.user_data['admin_chat_id'] = chat_id
+    
+    # Show main menu
+    await send_main_menu(query, edit=True)
     return ConversationHandler.END
 
 async def send_main_menu(message_or_query, edit=False):
@@ -63,7 +96,8 @@ async def send_main_menu(message_or_query, edit=False):
         [InlineKeyboardButton("닉네임 변경 알림 설정", callback_data="admin_nick")],
         [InlineKeyboardButton("금칙어 관리", callback_data="admin_banned")],
         [InlineKeyboardButton("예약 메시지 관리", callback_data="admin_schedule")],
-        [InlineKeyboardButton("통계 데이터 관리", callback_data="admin_stats")]
+        [InlineKeyboardButton("통계 데이터 관리", callback_data="admin_stats")],
+        [InlineKeyboardButton("그룹 다시 선택", callback_data="admin_reselect")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "🔧 **관리자 메뉴**\n원하는 설정을 선택하세요."
@@ -75,12 +109,24 @@ async def send_main_menu(message_or_query, edit=False):
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    chat_id = query.message.chat.id
+    
+    if query.data == "admin_reselect":
+        await query.answer()
+        if 'admin_chat_id' in context.user_data:
+            del context.user_data['admin_chat_id']
+        await query.edit_message_text("다시 설정하려면 `/admin` 명령어를 입력해주세요.", parse_mode='Markdown')
+        return ConversationHandler.END
+
+    chat_id = context.user_data.get('admin_chat_id')
     user_id = query.from_user.id
     
+    if not chat_id:
+        await query.answer("선택된 그룹이 없습니다. /admin을 다시 입력해주세요.", show_alert=True)
+        return ConversationHandler.END
+
     if not await check_admin_rights(context.bot, chat_id, user_id):
-        await query.answer("권한이 없습니다.")
-        return
+        await query.answer("해당 그룹에 대한 권한이 없습니다.", show_alert=True)
+        return ConversationHandler.END
 
     await query.answer()
     data = query.data
@@ -214,7 +260,9 @@ async def send_backup(message, chat_id):
     os.remove(filename)
 
 async def handle_input_spam_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat.id
+    chat_id = context.user_data.get('admin_chat_id')
+    if not chat_id: return ConversationHandler.END
+    
     try:
         limit = int(update.message.text)
         db.set_setting(chat_id, "spam_limit", limit)
@@ -225,7 +273,9 @@ async def handle_input_spam_limit(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 async def handle_input_spam_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat.id
+    chat_id = context.user_data.get('admin_chat_id')
+    if not chat_id: return ConversationHandler.END
+
     try:
         time_sec = int(update.message.text)
         db.set_setting(chat_id, "spam_time", time_sec)
@@ -236,7 +286,9 @@ async def handle_input_spam_time(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def handle_input_banned_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat.id
+    chat_id = context.user_data.get('admin_chat_id')
+    if not chat_id: return ConversationHandler.END
+
     word = update.message.text.strip()
     if db.add_banned_word(chat_id, word):
         await update.message.reply_text(f"✅ 금칙어 '{word}' 추가 완료.")
@@ -246,7 +298,9 @@ async def handle_input_banned_word(update: Update, context: ContextTypes.DEFAULT
     return ConversationHandler.END
 
 async def handle_input_banned_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat.id
+    chat_id = context.user_data.get('admin_chat_id')
+    if not chat_id: return ConversationHandler.END
+
     word = update.message.text.strip()
     if db.remove_banned_word(chat_id, word):
         await update.message.reply_text(f"✅ 금칙어 '{word}' 삭제 완료.")
@@ -277,7 +331,9 @@ async def handle_schedule_time(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_schedule_repeat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    chat_id = query.message.chat.id
+    chat_id = context.user_data.get('admin_chat_id')
+    if not chat_id: return ConversationHandler.END
+
     await query.answer()
     
     repeat_type = "daily" if query.data == "rep_daily" else "none"
@@ -290,7 +346,9 @@ async def handle_schedule_repeat(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def handle_schedule_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat.id
+    chat_id = context.user_data.get('admin_chat_id')
+    if not chat_id: return ConversationHandler.END
+
     try:
         msg_id = int(update.message.text.strip())
         if db.delete_scheduled_message(chat_id, msg_id):
@@ -303,12 +361,17 @@ async def handle_schedule_remove(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type not in ['group', 'supergroup']:
-        return
-    chat_id = update.message.chat.id
-    user_id = update.message.from_user.id
-    if not await check_admin_rights(context.bot, chat_id, user_id):
-        return
+    if update.message.chat.type == 'private':
+        chat_id = context.user_data.get('admin_chat_id')
+        if not chat_id:
+            await update.message.reply_text("/admin 을 통해 설정할 그룹을 먼저 선택해주세요.")
+            return
+    else:
+        chat_id = update.message.chat.id
+        user_id = update.message.from_user.id
+        if not await check_admin_rights(context.bot, chat_id, user_id):
+            return
+            
     await send_backup(update.message, chat_id)
 
 def get_admin_conversation_handler():
@@ -318,6 +381,7 @@ def get_admin_conversation_handler():
             CallbackQueryHandler(admin_callback, pattern='^admin_|^spam_|^nick_|^banned_|^schedule_|^stats_')
         ],
         states={
+            SELECT_GROUP: [CallbackQueryHandler(handle_group_select, pattern='^select_group_')],
             AWAITING_SPAM_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_limit)],
             AWAITING_SPAM_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_time)],
             AWAITING_BANNED_WORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_banned_word)],
