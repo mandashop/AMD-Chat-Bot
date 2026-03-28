@@ -48,7 +48,7 @@ def main():
         logger.error("BOT_TOKEN이 설정되지 않았습니다.")
         return
 
-    # 봇 애플리케이션 생성 (drop_pending_updates=True로 이전 업데이트 무시)
+    # 봇 애플리케이션 생성
     application = Application.builder().token(config.BOT_TOKEN).post_init(setup_scheduler).build()
 
     # 핸들러 추가
@@ -80,10 +80,15 @@ def main():
     flask_thread.daemon = True
     flask_thread.start()
 
-    # 봇 시작 (polling) - drop_pending_updates로 이전 업데이트 무시
-    print("Starting polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    print("Polling ended!")
+    # 봇 시작 (polling)
+    # close_loop=False로 설정하여 이벤트 루프 재사용 문제 해결
+    logger.info("Starting polling...")
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES, 
+        drop_pending_updates=True,
+        close_loop=False
+    )
+    logger.info("Polling ended!")
 
 if __name__ == "__main__":
     main()
