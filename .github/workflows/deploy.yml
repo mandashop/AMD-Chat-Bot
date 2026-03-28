@@ -26,6 +26,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          wranglerVersion: '3'
+          command: deploy --var BOT_TOKEN:${{ secrets.BOT_TOKEN }}
