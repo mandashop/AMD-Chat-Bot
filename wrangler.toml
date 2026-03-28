@@ -5,4 +5,4 @@ compatibility_date = "2024-01-01"
 # KV Namespace for data storage
 [[kv_namespaces]]
 binding = "KV"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "b240ff936bdd4564a367f62032599502"

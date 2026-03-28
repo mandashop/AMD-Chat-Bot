@@ -1,10 +1,16 @@
 // AMD Chat Bot - Cloudflare Workers
-// Telegram Bot with attendance, ranking, and stats features
+// Telegram Bot with attendance, ranking, and duplicate message management
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
 // 출석체크 키워드
 const ATTENDANCE_KEYWORDS = ['ㅊㅊ', '출첵', '출석체크'];
+
+// 중복 메시지 관리 설정
+const DUPLICATE_SETTINGS = {
+  timeWindowMinutes: 10,  // 10분 내
+  maxDuplicates: 5        // 5회 이상 중복 시 삭제
+};
 
 // 메인 요청 핸들러
 export default {
@@ -63,6 +69,7 @@ async function handleMessage(message, botToken, env) {
   const chatType = message.chat.type;
   const username = message.from.username;
   const firstName = message.from.first_name;
+  const messageId = message.message_id;
   
   // 사용자 정보 저장
   await saveUserInfo(userId, { username, first_name: firstName }, env);
@@ -73,6 +80,7 @@ async function handleMessage(message, botToken, env) {
       await sendMessage(botToken, chatId, 
         '안녕하세요! 🤖 AMD Chat Bot입니다.\n\n' +
         '이 봇은 그룹 채팅에서 다음 기능을 제공합니다:\n' +
+        '• 중복 메시지 관리\n' +
         '• 출석체크 (ㅊㅊ, 출첵, 출석체크)\n' +
         '• 채팅 순위 (/rank)\n' +
         '• 출석 순위 (/attendrank)\n' +
@@ -85,21 +93,107 @@ async function handleMessage(message, botToken, env) {
   
   // 그룹/슈퍼그룹 처리
   if (chatType === 'group' || chatType === 'supergroup') {
-    // 명령어 처리
+    // 1. 중복 메시지 관리 (가장 먼저 체크)
+    const isDuplicate = await handleDuplicateMessage(userId, chatId, text, messageId, firstName, botToken, env);
+    if (isDuplicate) {
+      return; // 중복 메시지 삭제됨
+    }
+    
+    // 2. 명령어 처리
     if (text.startsWith('/')) {
       await handleCommand(message, botToken, env);
       return;
     }
     
-    // 출석체크 처리
+    // 3. 출석체크 처리
     if (ATTENDANCE_KEYWORDS.some(keyword => text.includes(keyword))) {
       await handleAttendance(userId, chatId, firstName, botToken, env);
       return;
     }
     
-    // 메시지 카운트 증가
+    // 4. 메시지 카운트 증가
     await incrementMessageCount(userId, chatId, env);
   }
+}
+
+// 중복 메시지 관리
+async function handleDuplicateMessage(userId, chatId, text, messageId, firstName, botToken, env) {
+  // 빈 메시지는 체크하지 않음
+  if (!text || text.trim() === '') {
+    return false;
+  }
+  
+  const messageHash = hashString(text.trim());
+  const now = Date.now();
+  const timeWindowMs = DUPLICATE_SETTINGS.timeWindowMinutes * 60 * 1000;
+  
+  // 사용자별 + 채팅별 + 메시지내용별 키
+  const key = `duplicate:${chatId}:${userId}:${messageHash}`;
+  
+  // 기존 데이터 가져오기
+  const existingData = await env.KV.get(key);
+  let messageData = { count: 0, timestamps: [], firstMessageId: null };
+  
+  if (existingData) {
+    messageData = JSON.parse(existingData);
+    // 시간이 지난 기록 필터링
+    messageData.timestamps = messageData.timestamps.filter(ts => now - ts < timeWindowMs);
+  }
+  
+  // 카운트 증가
+  messageData.count = messageData.timestamps.length + 1;
+  messageData.timestamps.push(now);
+  
+  if (!messageData.firstMessageId) {
+    messageData.firstMessageId = messageId;
+  }
+  
+  // 중복 횟수 체크
+  if (messageData.count >= DUPLICATE_SETTINGS.maxDuplicates) {
+    // 중복 제한 초과 - 메시지 삭제 및 경고
+    try {
+      // 경고 메시지 전송
+      await sendMessage(
+        botToken, 
+        chatId, 
+        `🚫 ${firstName}님, ${DUPLICATE_SETTINGS.timeWindowMinutes}분 내에 동일한 메시지를 ${DUPLICATE_SETTINGS.maxDuplicates}회 이상 복사/붙여넣기 하셨습니다.`,
+        { reply_to_message_id: messageId }
+      );
+      
+      // 메시지 삭제
+      await deleteMessage(botToken, chatId, messageId);
+      
+      console.log(`Duplicate message deleted: user=${userId}, chat=${chatId}, count=${messageData.count}`);
+    } catch (error) {
+      console.error('Error handling duplicate message:', error);
+    }
+    
+    // 카운트 리셋
+    messageData.count = 0;
+    messageData.timestamps = [];
+    messageData.firstMessageId = null;
+    
+    // KV에 저장 (짧은 만료 시간)
+    await env.KV.put(key, JSON.stringify(messageData), { expirationTtl: DUPLICATE_SETTINGS.timeWindowMinutes * 60 });
+    
+    return true; // 중복 처리됨
+  }
+  
+  // KV에 저장 (설정된 시간 후 만료)
+  await env.KV.put(key, JSON.stringify(messageData), { expirationTtl: DUPLICATE_SETTINGS.timeWindowMinutes * 60 });
+  
+  return false; // 중복 아님
+}
+
+// 문자열 해시 함수 (간단한 구현)
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // 32bit 정수로 변환
+  }
+  return hash.toString();
 }
 
 // 명령어 처리
@@ -110,7 +204,6 @@ async function handleCommand(message, botToken, env) {
   const firstName = message.from.first_name;
   
   const command = text.split(' ')[0].split('@')[0];
-  const args = text.split(' ').slice(1);
   
   switch (command) {
     case '/start':
@@ -138,7 +231,9 @@ async function handleCommand(message, botToken, env) {
         '/attendrank - 출석 순위 Top 10\n\n' +
         '✅ **출석체크**\n' +
         '/attend 또는\n' +
-        'ㅊㅊ / 출첵 / 출석체크'
+        'ㅊㅊ / 출첵 / 출석체크\n\n' +
+        '🛡️ **중복 메시지 관리**\n' +
+        `${DUPLICATE_SETTINGS.timeWindowMinutes}분 내에 동일한 메시지 ${DUPLICATE_SETTINGS.maxDuplicates}회 이상 시 자동 삭제`
       );
       break;
       
@@ -289,18 +384,21 @@ async function handleCallbackQuery(callbackQuery, botToken, env) {
 }
 
 // Telegram API - 메시지 보내기
-async function sendMessage(botToken, chatId, text) {
+async function sendMessage(botToken, chatId, text, options = {}) {
   const url = `${TELEGRAM_API}${botToken}/sendMessage`;
   
   try {
+    const body = {
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'Markdown',
+      ...options
+    };
+    
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'Markdown'
-      })
+      body: JSON.stringify(body)
     });
     
     if (!response.ok) {
@@ -309,6 +407,29 @@ async function sendMessage(botToken, chatId, text) {
     }
   } catch (error) {
     console.error('Error sending message:', error);
+  }
+}
+
+// Telegram API - 메시지 삭제
+async function deleteMessage(botToken, chatId, messageId) {
+  const url = `${TELEGRAM_API}${botToken}/deleteMessage`;
+  
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.text();
+      console.error('Error deleting message:', error);
+    }
+  } catch (error) {
+    console.error('Error deleting message:', error);
   }
 }
 
