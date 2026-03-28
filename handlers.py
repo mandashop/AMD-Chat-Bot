@@ -22,6 +22,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.message.chat
     chat_type = chat.type
     chat_id = chat.id
+    message_id = update.message.message_id
 
     # Register or update group info
     if chat_type in ['group', 'supergroup']:
@@ -49,12 +50,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Count identical messages
     same_msg_count = sum(1 for m in user_msg_cache[cache_key] if m[1] == text)
     if same_msg_count >= spam_limit:
-        # 메시지 삭제
+        # 먼저 경고 메시지를 답글로 전송 (메시지 삭제하기 전에!)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🚫 {user.first_name}님, {spam_time_minutes}분 내 동일 메시지 제한횟수({spam_limit}회)를 초과하였습니다.",
+                reply_to_message_id=message_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to send warning message: {e}")
+        # 그 다음 메시지 삭제
         await update.message.delete()
-        # 경고 메시지 전송 (자동 삭제하지 않음)
-        warning_msg = await update.message.reply_text(
-            f"🚫 {user.first_name}님, {spam_time_minutes}분 내 동일 메시지 제한횟수({spam_limit}회)를 초과하였습니다."
-        )
         return
 
     # 3. Username change notification (@username 변경 감지)
@@ -69,7 +75,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_name_str = f"@{new_username}" if new_username else "(없음)"
                 await update.message.reply_text(
                     f"🔔 사용자명 변경 알림\n{old_name_str} → {new_name_str}",
-                    reply_to_message_id=update.message.message_id
+                    reply_to_message_id=message_id
                 )
 
     # Register or update user info
@@ -79,7 +85,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Increment chat count
         db.increment_chat_count(user.id, chat_id)
 
-        # Check attendance
+        # Check attendance - 출석체크 키워드 확인
         attendance_keywords = ['ㅊㅊ', '출첵', '출석체크']
         if any(keyword in text for keyword in attendance_keywords):
             await process_attendance(update, user, chat_id)
@@ -109,14 +115,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-async def process_attendance(update: Update, user, chat_id, manual=False):
+async def process_attendance(update: Update, user, chat_id):
+    """출석체크 처리 - 항상 응답 메시지를 볃냄"""
     success = db.record_attendance(user.id, chat_id)
     name = user.first_name or user.username or "사용자"
     if success:
         count = db.get_attendance_count(user.id, chat_id)
         await update.message.reply_text(f"✅ {name}님 출석체크 완료! (누적 {count}회)")
-    elif manual:
-        await update.message.reply_text(f"⚠️ {name}님은 오늘 이미 출석하셨습니다.")
+    else:
+        # 이미 출석한 경우에도 알려줌
+        count = db.get_attendance_count(user.id, chat_id)
+        await update.message.reply_text(f"⚠️ {name}님은 오늘 이미 출석하셨습니다. (누적 {count}회)")
 
 async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -169,7 +178,7 @@ async def cmd_attend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     chat_id = update.message.chat_id
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
-    await process_attendance(update, user, chat_id, manual=True)
+    await process_attendance(update, user, chat_id)
 
 async def cmd_attendrank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
