@@ -12,7 +12,7 @@ import database as db
     AWAITING_BANNED_WORD,
     AWAITING_BANNED_WORD_REMOVE,
     AWAITING_SPAM_LIMIT,
-    AWAITING_SPAM_TIME,
+    AWAITING_SPAM_TIME_MINUTES,
     AWAITING_SCHEDULE_MSG,
     AWAITING_SCHEDULE_TIME,
     AWAITING_SCHEDULE_REPEAT,
@@ -136,7 +136,7 @@ async def handle_group_select(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def send_main_menu(message_or_query, edit=False, context=None):
     keyboard = [
         [InlineKeyboardButton("🚫 도배 방지 설정", callback_data="admin_spam")],
-        [InlineKeyboardButton("🔔 닉네임 변경 알림 설정", callback_data="admin_nick")],
+        [InlineKeyboardButton("🔔 사용자명 변경 알림 설정", callback_data="admin_username")],
         [InlineKeyboardButton("🤬 금칙어 관리", callback_data="admin_banned")],
         [InlineKeyboardButton("📅 예약 메시지 관리", callback_data="admin_schedule")],
         [InlineKeyboardButton("📊 통계 데이터 관리", callback_data="admin_stats")],
@@ -188,37 +188,37 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "admin_spam":
         limit = db.get_setting(chat_id, "spam_limit", 5)
-        time_sec = db.get_setting(chat_id, "spam_time", 10)
+        time_minutes = db.get_setting(chat_id, "spam_time_minutes", 10)
         keyboard = [
             [InlineKeyboardButton("횟수 제한 변경", callback_data="spam_limit")],
-            [InlineKeyboardButton("시간 제한 변경", callback_data="spam_time")],
+            [InlineKeyboardButton("시간(분) 제한 변경", callback_data="spam_time")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🚫 **도배 방지 설정**\n\n현재 설정: {time_sec}초 내에 {limit}회 동일 메시지 전송 시 제재"
+        text = f"🚫 **도배 방지 설정**\n\n현재 설정: {time_minutes}분 내에 {limit}회 동일 메시지 전송 시 제재"
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return MAIN_MENU
         
-    elif data == "admin_nick":
-        is_on = db.get_setting(chat_id, "nick_alert", False)
+    elif data == "admin_username":
+        is_on = db.get_setting(chat_id, "username_alert", False)
         status = "켜짐 ✅" if is_on else "꺼짐 ❌"
         keyboard = [
-            [InlineKeyboardButton("상태 토글", callback_data="nick_toggle")],
+            [InlineKeyboardButton("상태 토글", callback_data="username_toggle")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🔔 **닉네임 변경 알림**\n\n현재 상태: {status}"
+        text = f"🔔 **사용자명(@username) 변경 알림**\n\n현재 상태: {status}\n\n사용자가 @username을 변경하면 해당 메시지에 답글로 알림을 보냅니다."
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return MAIN_MENU
 
-    elif data == "nick_toggle":
-        is_on = db.get_setting(chat_id, "nick_alert", False)
-        db.set_setting(chat_id, "nick_alert", not is_on)
+    elif data == "username_toggle":
+        is_on = db.get_setting(chat_id, "username_alert", False)
+        db.set_setting(chat_id, "username_alert", not is_on)
         is_on = not is_on
         status = "켜짐 ✅" if is_on else "꺼짐 ❌"
         keyboard = [
-            [InlineKeyboardButton("상태 토글", callback_data="nick_toggle")],
+            [InlineKeyboardButton("상태 토글", callback_data="username_toggle")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = f"🔔 **닉네임 변경 알림**\n\n현재 상태: {status}"
+        text = f"🔔 **사용자명(@username) 변경 알림**\n\n현재 상태: {status}\n\n사용자가 @username을 변경하면 해당 메시지에 답글로 알림을 보냅니다."
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return MAIN_MENU
 
@@ -253,27 +253,28 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_stats":
         keyboard = [
-            [InlineKeyboardButton("통계 초기화", callback_data="stats_reset")],
+            [InlineKeyboardButton("채팅 통계 초기화", callback_data="stats_reset_chat")],
+            [InlineKeyboardButton("출석 통계 초기화", callback_data="stats_reset_attend")],
             [InlineKeyboardButton("데이터 백업 (.TXT)", callback_data="stats_backup")],
             [InlineKeyboardButton("뒤로가기", callback_data="admin_main")]
         ]
-        text = "📊 **통계 데이터 관리**"
+        text = "📊 **통계 데이터 관리**\n\n⚠️ 초기화는 되돌릴 수 없습니다."
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return MAIN_MENU
 
     elif data == "spam_limit":
         await query.edit_message_text(
-            "새로운 도배 제한 횟수를 숫자로 입력하세요.",
+            "새로운 도배 제한 횟수를 숫자로 입력하세요. (1 ~ 무제한)",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_spam")]])
         )
         return AWAITING_SPAM_LIMIT
 
     elif data == "spam_time":
         await query.edit_message_text(
-            "새로운 도배 제한 시간(초)을 숫자로 입력하세요.",
+            "새로운 도배 제한 시간을 분 단위로 입력하세요.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("취소", callback_data="admin_spam")]])
         )
-        return AWAITING_SPAM_TIME
+        return AWAITING_SPAM_TIME_MINUTES
 
     elif data == "banned_add":
         await query.edit_message_text(
@@ -303,11 +304,18 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return AWAITING_SCHEDULE_REMOVE
 
-    elif data == "stats_reset":
+    elif data == "stats_reset_chat":
         db.reset_all_user_stats(chat_id)
+        await query.edit_message_text(
+            "✅ 채팅 통계 데이터가 초기화되었습니다.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]])
+        )
+        return MAIN_MENU
+
+    elif data == "stats_reset_attend":
         db.reset_all_attendance(chat_id)
         await query.edit_message_text(
-            "✅ 통계 데이터가 초기화되었습니다.",
+            "✅ 출석 통계 데이터가 초기화되었습니다.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("뒤로가기", callback_data="admin_stats")]])
         )
         return MAIN_MENU
@@ -352,24 +360,30 @@ async def handle_input_spam_limit(update: Update, context: ContextTypes.DEFAULT_
     
     try:
         limit = int(update.message.text)
-        db.set_setting(chat_id, "spam_limit", limit)
-        await update.message.reply_text(f"✅ 도배 제한 횟수가 {limit}회로 변경되었습니다.")
+        if limit < 1:
+            await update.message.reply_text("❌ 1 이상의 숫자를 입력해주세요.")
+        else:
+            db.set_setting(chat_id, "spam_limit", limit)
+            await update.message.reply_text(f"✅ 도배 제한 횟수가 {limit}회로 변경되었습니다.")
     except ValueError:
         await update.message.reply_text("❌ 숫자를 입력해주세요.")
     
     await send_main_menu(update.message, context=context)
     return MAIN_MENU
 
-async def handle_input_spam_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_input_spam_time_minutes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.user_data.get('admin_chat_id')
     if not chat_id:
         await update.message.reply_text("❌ 세션이 만료되었습니다. /admin을 다시 입력해주세요.")
         return ConversationHandler.END
 
     try:
-        time_sec = int(update.message.text)
-        db.set_setting(chat_id, "spam_time", time_sec)
-        await update.message.reply_text(f"✅ 도배 제한 시간이 {time_sec}초로 변경되었습니다.")
+        time_minutes = int(update.message.text)
+        if time_minutes < 1:
+            await update.message.reply_text("❌ 1 이상의 숫자를 입력해주세요.")
+        else:
+            db.set_setting(chat_id, "spam_time_minutes", time_minutes)
+            await update.message.reply_text(f"✅ 도배 제한 시간이 {time_minutes}분으로 변경되었습니다.")
     except ValueError:
         await update.message.reply_text("❌ 숫자를 입력해주세요.")
     
@@ -486,13 +500,13 @@ def get_admin_conversation_handler():
                 CallbackQueryHandler(handle_group_select, pattern='^select_group_')
             ],
             MAIN_MENU: [
-                CallbackQueryHandler(admin_callback, pattern='^admin_|^spam_|^nick_|^banned_|^schedule_|^stats_')
+                CallbackQueryHandler(admin_callback, pattern='^admin_|^spam_|^username_|^banned_|^schedule_|^stats_')
             ],
             AWAITING_SPAM_LIMIT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_limit)
             ],
-            AWAITING_SPAM_TIME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_time)
+            AWAITING_SPAM_TIME_MINUTES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_spam_time_minutes)
             ],
             AWAITING_BANNED_WORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_banned_word)

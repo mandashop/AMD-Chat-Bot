@@ -7,10 +7,12 @@ import datetime
 logger = logging.getLogger(__name__)
 
 async def reset_daily_attendance():
-    logger.info("매일 자정 출석 초기화 (날짜가 바뀌어 자동 초기화됨)")
+    """매일 자정 - 출석은 날짜별로 자동 관리되므로 별도 처리 불필요"""
+    logger.info("매일 자정 스케줄러 실행")
     pass
 
 async def monthly_ranking_announce(bot):
+    """매월 말일 12:00 - 랭킹 공지"""
     groups = db.get_all_groups()
     for group in groups:
         chat_id = group['chat_id']
@@ -35,16 +37,27 @@ async def monthly_ranking_announce(bot):
 
         try:
             await bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+            logger.info(f"월간 랭킹 공지 완료 (chat_id: {chat_id})")
         except Exception as e:
             logger.error(f"월간 랭킹 공지 실패 (chat_id: {chat_id}): {e}")
 
-        # 데이터 초기화
-        db.reset_all_user_stats(chat_id)
-        db.reset_all_attendance(chat_id)
-        
+async def monthly_reset(bot):
+    """매월 말일 23:59 - 통계 초기화"""
+    groups = db.get_all_groups()
+    for group in groups:
+        chat_id = group['chat_id']
+        try:
+            # 출석 및 채팅 통계 초기화
+            db.reset_all_user_stats(chat_id)
+            db.reset_all_attendance(chat_id)
+            logger.info(f"월간 통계 초기화 완료 (chat_id: {chat_id})")
+        except Exception as e:
+            logger.error(f"월간 통계 초기화 실패 (chat_id: {chat_id}): {e}")
+    
     logger.info("월간 통계 초기화 완료")
 
 async def kick_deleted_accounts(bot):
+    """탈퇴한 계정 추방"""
     groups = db.get_all_groups()
     
     for group in groups:
@@ -78,6 +91,7 @@ async def kick_deleted_accounts(bot):
             logger.info(f"탈퇴한 계정 {kicked_count}명 추방 완료 (chat_id: {chat_id})")
 
 async def send_scheduled_messages(bot):
+    """예약 메시지 전송"""
     msgs = db.get_scheduled_messages()
     now_str = datetime.datetime.now().strftime("%H:%M")
     
@@ -95,11 +109,14 @@ async def setup_scheduler(application):
     bot = application.bot
     scheduler = AsyncIOScheduler()
 
-    # 매일 자정 출석 관련 로직 (필요시)
+    # 매일 자정
     scheduler.add_job(reset_daily_attendance, 'cron', hour=0, minute=0)
 
-    # 매월 말일 23:59 랭킹 공지
-    scheduler.add_job(monthly_ranking_announce, 'cron', day='last', hour=23, minute=59, args=[bot])
+    # 매월 말일 12:00 랭킹 공지
+    scheduler.add_job(monthly_ranking_announce, 'cron', day='last', hour=12, minute=0, args=[bot])
+
+    # 매월 말일 23:59 통계 초기화
+    scheduler.add_job(monthly_reset, 'cron', day='last', hour=23, minute=59, args=[bot])
 
     # 예약 메시지 (매 분마다 체크)
     scheduler.add_job(send_scheduled_messages, 'cron', minute='*', args=[bot])

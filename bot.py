@@ -3,7 +3,7 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, filters
 from config import config
-from handlers import handle_message, cmd_rank, cmd_mystats, cmd_stats, cmd_attend, cmd_attendrank
+from handlers import handle_message, cmd_rank, cmd_mystats, cmd_stats, cmd_attend, cmd_attendrank, cmd_userstats
 from admin import get_admin_conversation_handler, cmd_backup
 from scheduler import setup_scheduler
 import database as db
@@ -48,13 +48,14 @@ def main():
         logger.error("BOT_TOKEN이 설정되지 않았습니다.")
         return
 
-    # 봇 애플리케이션 생성
+    # 봇 애플리케이션 생성 (drop_pending_updates=True로 이전 업데이트 무시)
     application = Application.builder().token(config.BOT_TOKEN).post_init(setup_scheduler).build()
 
     # 핸들러 추가
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("rank", cmd_rank))
     application.add_handler(CommandHandler("mystats", cmd_mystats))
+    application.add_handler(CommandHandler("userstats", cmd_userstats))
     application.add_handler(CommandHandler("stats", cmd_stats))
     application.add_handler(CommandHandler("attend", cmd_attend))
     application.add_handler(CommandHandler("attendrank", cmd_attendrank))
@@ -79,9 +80,9 @@ def main():
     flask_thread.daemon = True
     flask_thread.start()
 
-    # 봇 시작 (polling)
+    # 봇 시작 (polling) - drop_pending_updates로 이전 업데이트 무시
     print("Starting polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     print("Polling ended!")
 
 if __name__ == "__main__":

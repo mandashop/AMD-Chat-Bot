@@ -182,6 +182,20 @@ def get_top_chatters(chat_id, limit=10):
     conn.close()
     return [dict(row) for row in rows]
 
+def get_user_stats_by_username(username, chat_id):
+    """사용자명으로 사용자 통계 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    SELECT u.user_id, u.username, u.first_name, s.chat_count 
+    FROM user_stats s
+    JOIN users u ON s.user_id = u.user_id
+    WHERE u.username = ? AND s.chat_id = ?
+    ''', (username, chat_id))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def reset_all_user_stats(chat_id):
     conn = get_connection()
     cursor = conn.cursor()

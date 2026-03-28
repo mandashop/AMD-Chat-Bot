@@ -9,7 +9,8 @@ from exchange import exchange_client
 
 logger = logging.getLogger(__name__)
 
-# Anti-spam cache: {user_id: [(timestamp, text), ...]}
+# Anti-spam cache: {(chat_id, user_id): [(timestamp, text), ...]}
+# 그룹별 + 사용자별로 캐시를 분리
 user_msg_cache = defaultdict(list)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -33,31 +34,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ {user.first_name}님, 금칙어가 포함된 메시지는 삭제되었습니다.")
         return
 
-    # 2. Anti-spam check
+    # 2. Anti-spam check (그룹별 + 사용자별)
     spam_limit = db.get_setting(chat_id, "spam_limit", 5)
-    spam_time = db.get_setting(chat_id, "spam_time", 10)
-    now = time.time()
+    spam_time_minutes = db.get_setting(chat_id, "spam_time_minutes", 10)  # 분 단위로 변경
+    spam_time_seconds = spam_time_minutes * 60  # 초로 변환
     
-    # Filter old messages
-    user_msg_cache[user.id] = [m for m in user_msg_cache[user.id] if now - m[0] <= spam_time]
-    user_msg_cache[user.id].append((now, text))
+    now = time.time()
+    cache_key = (chat_id, user.id)
+    
+    # Filter old messages (설정된 시간 이전의 메시지만 필터링)
+    user_msg_cache[cache_key] = [m for m in user_msg_cache[cache_key] if now - m[0] <= spam_time_seconds]
+    user_msg_cache[cache_key].append((now, text))
     
     # Count identical messages
-    same_msg_count = sum(1 for m in user_msg_cache[user.id] if m[1] == text)
+    same_msg_count = sum(1 for m in user_msg_cache[cache_key] if m[1] == text)
     if same_msg_count >= spam_limit:
+        # 메시지 삭제
         await update.message.delete()
-        # Optionally warn or restrict
-        if same_msg_count == spam_limit:
-            await update.message.reply_text(f"🚫 {user.first_name}님, 동일 메시지 도배로 인해 메시지가 삭제됩니다.")
+        # 경고 메시지 전송 (자동 삭제하지 않음)
+        warning_msg = await update.message.reply_text(
+            f"🚫 {user.first_name}님, {spam_time_minutes}분 내 동일 메시지 제한횟수({spam_limit}회)를 초과하였습니다."
+        )
         return
 
-    # 3. Username change notification
+    # 3. Username change notification (@username 변경 감지)
     old_user = db.get_user(user.id)
     if old_user:
-        old_name = old_user.get('first_name')
-        if old_name and old_name != user.first_name:
-            if db.get_setting(chat_id, "nick_alert", False):
-                await update.message.reply_text(f"🔔 사용자명 변경 알림\n{old_name} 님이 {user.first_name} 님으로 이름을 변경했습니다.")
+        old_username = old_user.get('username')
+        new_username = user.username
+        if old_username != new_username:
+            if db.get_setting(chat_id, "username_alert", False):
+                # 답글로 변경 전/후 안내
+                old_name_str = f"@{old_username}" if old_username else "(없음)"
+                new_name_str = f"@{new_username}" if new_username else "(없음)"
+                await update.message.reply_text(
+                    f"🔔 사용자명 변경 알림\n{old_name_str} → {new_name_str}",
+                    reply_to_message_id=update.message.message_id
+                )
 
     # Register or update user info
     db.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
@@ -125,6 +138,28 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = db.get_user_stats(user_id, chat_id)
     count = stats.get('chat_count', 0) if stats else 0
     await update.message.reply_text(f"💬 내 채팅 횟수: {count}회")
+
+async def cmd_userstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """사용자명으로 다른 사람의 메시지 수량 확인"""
+    chat_id = update.message.chat_id
+    
+    # 명령어에서 사용자명 추출 (/userstats @username 또는 /userstats username)
+    args = update.message.text.split()
+    if len(args) < 2:
+        await update.message.reply_text("사용법: /userstats @사용자명 또는 /userstats 사용자명")
+        return
+    
+    target_username = args[1].lstrip('@')  # @ 제거
+    
+    # 데이터베이스에서 사용자 검색
+    user_stats = db.get_user_stats_by_username(target_username, chat_id)
+    
+    if user_stats:
+        name = user_stats.get('first_name') or user_stats.get('username') or target_username
+        count = user_stats.get('chat_count', 0)
+        await update.message.reply_text(f"💬 {name}님의 채팅 횟수: {count}회")
+    else:
+        await update.message.reply_text(f"❌ @{target_username} 사용자를 찾을 수 없거나 채팅 기록이 없습니다.")
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # /stats can be an alias to /rank or show both my stats and rank
